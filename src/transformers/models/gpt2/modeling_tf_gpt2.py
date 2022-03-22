@@ -13,12 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" TF 2.0 OpenAI GPT-2 model. """
+""" TF 2.0 OpenAI GPT-2 model."""
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
+import numpy as np
 import tensorflow as tf
+from tensorflow.compiler.tf2xla.python.xla import dynamic_update_slice
 
 from ...activations_tf import get_tf_activation
 from ...file_utils import (
@@ -37,6 +39,7 @@ from ...modeling_tf_outputs import (
 from ...modeling_tf_utils import (
     TFCausalLanguageModelingLoss,
     TFConv1D,
+    TFModelInputType,
     TFPreTrainedModel,
     TFSequenceClassificationLoss,
     TFSequenceSummary,
@@ -44,8 +47,8 @@ from ...modeling_tf_utils import (
     get_initializer,
     input_processing,
     keras_serializable,
-    shape_list,
 )
+from ...tf_utils import shape_list
 from ...utils import logging
 from .configuration_gpt2 import GPT2Config
 
@@ -349,22 +352,22 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
 
     def call(
         self,
-        input_ids=None,
-        past=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        training=False,
+        input_ids: Optional[TFModelInputType] = None,
+        past: Optional[Tuple[Tuple[Union[np.ndarray, tf.Tensor]]]] = None,
+        attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        token_type_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        position_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        head_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        inputs_embeds: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        encoder_hidden_states: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        encoder_attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        training: Optional[bool] = False,
         **kwargs,
-    ):
+    ) -> Union[TFBaseModelOutputWithPastAndCrossAttentions, Tuple[tf.Tensor]]:
         inputs = input_processing(
             func=self.call,
             config=self.config,
@@ -558,7 +561,7 @@ class TFGPT2PreTrainedModel(TFPreTrainedModel):
         Dummy inputs to build the network.
 
         Returns:
-            :obj:`Dict[str, tf.Tensor]`: The dummy inputs.
+            `Dict[str, tf.Tensor]`: The dummy inputs.
         """
         dummy = {"input_ids": tf.constant(DUMMY_INPUTS)}
         # Add `encoder_hidden_states` to make the cross-attention layers' weights initialized
@@ -590,23 +593,23 @@ class TFGPT2DoubleHeadsModelOutput(ModelOutput):
     Base class for outputs of models predicting if two sentences are consecutive or not.
 
     Args:
-        logits (:obj:`tf.Tensor` of shape :obj:`(batch_size, num_choices, sequence_length, config.vocab_size)`):
+        logits (`tf.Tensor` of shape `(batch_size, num_choices, sequence_length, config.vocab_size)`):
             Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-        mc_logits (:obj:`tf.Tensor` of shape :obj:`(batch_size, num_choices)`):
+        mc_logits (`tf.Tensor` of shape `(batch_size, num_choices)`):
             Prediction scores of the multiple choice classification head (scores for each choice before SoftMax).
-        past_key_values (:obj:`List[tf.Tensor]`, `optional`, returned when ``use_cache=True`` is passed or when ``config.use_cache=True``):
-            List of :obj:`tf.Tensor` of length :obj:`config.n_layers`, with each tensor of shape :obj:`(2, batch_size,
-            num_heads, sequence_length, embed_size_per_head)`).
+        past_key_values (`List[tf.Tensor]`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            List of `tf.Tensor` of length `config.n_layers`, with each tensor of shape `(2, batch_size, num_heads,
+            sequence_length, embed_size_per_head)`).
 
             Contains pre-computed hidden-states (key and values in the attention blocks) that can be used (see
-            :obj:`past_key_values` input) to speed up sequential decoding.
-        hidden_states (:obj:`tuple(tf.Tensor)`, `optional`, returned when ``output_hidden_states=True`` is passed or when ``config.output_hidden_states=True``):
-            Tuple of :obj:`tf.Tensor` (one for the output of the embeddings + one for the output of each layer) of
-            shape :obj:`(batch_size, sequence_length, hidden_size)`.
+            `past_key_values` input) to speed up sequential decoding.
+        hidden_states (`tuple(tf.Tensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `tf.Tensor` (one for the output of the embeddings + one for the output of each layer) of shape
+            `(batch_size, sequence_length, hidden_size)`.
 
             Hidden-states of the model at the output of each layer plus the initial embedding outputs.
-        attentions (:obj:`tuple(tf.Tensor)`, `optional`, returned when ``output_attentions=True`` is passed or when ``config.output_attentions=True``):
-            Tuple of :obj:`tf.Tensor` (one for each layer) of shape :obj:`(batch_size, num_heads, sequence_length,
+        attentions (`tuple(tf.Tensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `tf.Tensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
             sequence_length)`.
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
@@ -622,100 +625,99 @@ class TFGPT2DoubleHeadsModelOutput(ModelOutput):
 
 GPT2_START_DOCSTRING = r"""
 
-    This model inherits from :class:`~transformers.TFPreTrainedModel`. Check the superclass documentation for the
-    generic methods the library implements for all its model (such as downloading or saving, resizing the input
-    embeddings, pruning heads etc.)
+    This model inherits from [`TFPreTrainedModel`]. Check the superclass documentation for the generic methods the
+    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
+    etc.)
 
-    This model is also a `tf.keras.Model <https://www.tensorflow.org/api_docs/python/tf/keras/Model>`__ subclass. Use
-    it as a regular TF 2.0 Keras Model and refer to the TF 2.0 documentation for all matter related to general usage
-    and behavior.
+    This model is also a [tf.keras.Model](https://www.tensorflow.org/api_docs/python/tf/keras/Model) subclass. Use it
+    as a regular TF 2.0 Keras Model and refer to the TF 2.0 documentation for all matter related to general usage and
+    behavior.
 
-    .. note::
+    <Tip>
 
-        TF 2.0 models accepts two formats as inputs:
+    TF 2.0 models accepts two formats as inputs:
 
-        - having all inputs as keyword arguments (like PyTorch models), or
-        - having all inputs as a list, tuple or dict in the first positional arguments.
+    - having all inputs as keyword arguments (like PyTorch models), or
+    - having all inputs as a list, tuple or dict in the first positional arguments.
 
-        This second option is useful when using :meth:`tf.keras.Model.fit` method which currently requires having all
-        the tensors in the first argument of the model call function: :obj:`model(inputs)`.
+    This second option is useful when using [`tf.keras.Model.fit`] method which currently requires having all the
+    tensors in the first argument of the model call function: `model(inputs)`.
 
-        If you choose this second option, there are three possibilities you can use to gather all the input Tensors in
-        the first positional argument :
+    If you choose this second option, there are three possibilities you can use to gather all the input Tensors in the
+    first positional argument :
 
-        - a single Tensor with :obj:`input_ids` only and nothing else: :obj:`model(inputs_ids)`
-        - a list of varying length with one or several input Tensors IN THE ORDER given in the docstring:
-          :obj:`model([input_ids, attention_mask])` or :obj:`model([input_ids, attention_mask, token_type_ids])`
-        - a dictionary with one or several input Tensors associated to the input names given in the docstring:
-          :obj:`model({"input_ids": input_ids, "token_type_ids": token_type_ids})`
+    - a single Tensor with `input_ids` only and nothing else: `model(inputs_ids)`
+    - a list of varying length with one or several input Tensors IN THE ORDER given in the docstring:
+    `model([input_ids, attention_mask])` or `model([input_ids, attention_mask, token_type_ids])`
+    - a dictionary with one or several input Tensors associated to the input names given in the docstring:
+    `model({"input_ids": input_ids, "token_type_ids": token_type_ids})`
+
+    </Tip>
 
     Parameters:
-        config (:class:`~transformers.GPT2Config`): Model configuration class with all the parameters of the model.
+        config ([`GPT2Config`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
-            configuration. Check out the :meth:`~transformers.PreTrainedModel.from_pretrained` method to load the model
-            weights.
+            configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
 """
 
 GPT2_INPUTS_DOCSTRING = r"""
     Args:
-        input_ids (:obj:`Numpy array` or :obj:`tf.Tensor` of shape :obj:`(batch_size, input_ids_length)`):
-            :obj:`input_ids_length` = ``sequence_length`` if ``past`` is ``None`` else ``past[0].shape[-2]``
-            (``sequence_length`` of input past key value states). Indices of input sequence tokens in the vocabulary.
+        input_ids (`Numpy array` or `tf.Tensor` of shape `(batch_size, input_ids_length)`):
+            `input_ids_length` = `sequence_length` if `past` is `None` else `past[0].shape[-2]` (`sequence_length` of
+            input past key value states). Indices of input sequence tokens in the vocabulary.
 
-            If :obj:`past` is used, only input IDs that do not have their past calculated should be passed as
-            ``input_ids``.
+            If `past` is used, only input IDs that do not have their past calculated should be passed as `input_ids`.
 
-            Indices can be obtained using :class:`~transformers.GPT2Tokenizer`. See
-            :func:`transformers.PreTrainedTokenizer.__call__` and :func:`transformers.PreTrainedTokenizer.encode` for
-            details.
+            Indices can be obtained using [`GPT2Tokenizer`]. See [`PreTrainedTokenizer.__call__`] and
+            [`PreTrainedTokenizer.encode`] for details.
 
-            `What are input IDs? <../glossary.html#input-ids>`__
-        past (:obj:`List[tf.Tensor]` of length :obj:`config.n_layers`):
+            [What are input IDs?](../glossary#input-ids)
+        past (`List[tf.Tensor]` of length `config.n_layers`):
             Contains pre-computed hidden-states (key and values in the attention blocks) as computed by the model (see
-            :obj:`past` output below). Can be used to speed up sequential decoding. The token ids which have their past
+            `past` output below). Can be used to speed up sequential decoding. The token ids which have their past
             given to this model should not be passed as input ids as they have already been computed.
-        attention_mask (:obj:`tf.Tensor` or :obj:`Numpy array` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Mask to avoid performing attention on padding token indices. Mask values selected in ``[0, 1]``:
+        attention_mask (`tf.Tensor` or `Numpy array` of shape `(batch_size, sequence_length)`, *optional*):
+            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
 
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
 
-            `What are attention masks? <../glossary.html#attention-mask>`__
-        token_type_ids (:obj:`tf.Tensor` or :obj:`Numpy array` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Segment token indices to indicate first and second portions of the inputs. Indices are selected in ``[0,
-            1]``:
+            [What are attention masks?](../glossary#attention-mask)
+        token_type_ids (`tf.Tensor` or `Numpy array` of shape `(batch_size, sequence_length)`, *optional*):
+            Segment token indices to indicate first and second portions of the inputs. Indices are selected in `[0,
+            1]`:
 
-            - 0 corresponds to a `sentence A` token,
-            - 1 corresponds to a `sentence B` token.
+            - 0 corresponds to a *sentence A* token,
+            - 1 corresponds to a *sentence B* token.
 
-            `What are token type IDs? <../glossary.html#token-type-ids>`__
-        position_ids (:obj:`tf.Tensor` or :obj:`Numpy array` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range ``[0,
-            config.max_position_embeddings - 1]``.
+            [What are token type IDs?](../glossary#token-type-ids)
+        position_ids (`tf.Tensor` or `Numpy array` of shape `(batch_size, sequence_length)`, *optional*):
+            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+            config.max_position_embeddings - 1]`.
 
-            `What are position IDs? <../glossary.html#position-ids>`__
-        head_mask (:obj:`Numpy array` or :obj:`tf.Tensor` of shape :obj:`(num_heads,)` or :obj:`(num_layers, num_heads)`, `optional`):
-            Mask to nullify selected heads of the self-attention modules. Mask values selected in ``[0, 1]``:
+            [What are position IDs?](../glossary#position-ids)
+        head_mask (`Numpy array` or `tf.Tensor` of shape `(num_heads,)` or `(num_layers, num_heads)`, *optional*):
+            Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`:
 
             - 1 indicates the head is **not masked**,
             - 0 indicates the head is **masked**.
 
-        inputs_embeds (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
-            Optionally, instead of passing :obj:`input_ids` you can choose to directly pass an embedded representation.
-            This is useful if you want more control over how to convert :obj:`input_ids` indices into associated
-            vectors than the model's internal embedding lookup matrix.
-        output_attentions (:obj:`bool`, `optional`):
-            Whether or not to return the attentions tensors of all attention layers. See ``attentions`` under returned
+        inputs_embeds (`tf.Tensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation. This
+            is useful if you want more control over how to convert `input_ids` indices into associated vectors than the
+            model's internal embedding lookup matrix.
+        output_attentions (`bool`, *optional*):
+            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
             tensors for more detail. This argument can be used only in eager mode, in graph mode the value in the
             config will be used instead.
-        output_hidden_states (:obj:`bool`, `optional`):
-            Whether or not to return the hidden states of all layers. See ``hidden_states`` under returned tensors for
+        output_hidden_states (`bool`, *optional*):
+            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
             more detail. This argument can be used only in eager mode, in graph mode the value in the config will be
             used instead.
-        return_dict (:obj:`bool`, `optional`):
-            Whether or not to return a :class:`~transformers.file_utils.ModelOutput` instead of a plain tuple. This
-            argument can be used in eager mode, in graph mode the value will always be set to True.
-        training (:obj:`bool`, `optional`, defaults to :obj:`False`):
+        return_dict (`bool`, *optional*):
+            Whether or not to return a [`~file_utils.ModelOutput`] instead of a plain tuple. This argument can be used
+            in eager mode, in graph mode the value will always be set to True.
+        training (`bool`, *optional*, defaults to `False`):
             Whether or not to use the model in training mode (some modules like dropout modules have different
             behaviors between training and evaluation).
 """
@@ -739,41 +741,41 @@ class TFGPT2Model(TFGPT2PreTrainedModel):
     )
     def call(
         self,
-        input_ids=None,
-        past=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        training=False,
+        input_ids: Optional[TFModelInputType] = None,
+        past: Optional[Tuple[Tuple[Union[np.ndarray, tf.Tensor]]]] = None,
+        attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        token_type_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        position_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        head_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        inputs_embeds: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        encoder_hidden_states: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        encoder_attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        training: Optional[bool] = False,
         **kwargs,
-    ):
+    ) -> Union[TFBaseModelOutputWithPastAndCrossAttentions, Tuple[tf.Tensor]]:
         r"""
-        encoder_hidden_states  (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
+        encoder_hidden_states  (`tf.Tensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
             Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention if
             the model is configured as a decoder.
-        encoder_attention_mask (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
+        encoder_attention_mask (`tf.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Mask to avoid performing attention on the padding token indices of the encoder input. This mask is used in
-            the cross-attention if the model is configured as a decoder. Mask values selected in ``[0, 1]``:
+            the cross-attention if the model is configured as a decoder. Mask values selected in `[0, 1]`:
 
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
 
-        past (:obj:`Tuple[Tuple[tf.Tensor]]` of length :obj:`config.n_layers`)
+        past (`Tuple[Tuple[tf.Tensor]]` of length `config.n_layers`)
             contains precomputed key and value hidden states of the attention blocks. Can be used to speed up decoding.
-            If :obj:`past` are used, the user can optionally input only the last :obj:`decoder_input_ids` (those that
-            don't have their past key value states given to this model) of shape :obj:`(batch_size, 1)` instead of all
-            :obj:`decoder_input_ids` of shape :obj:`(batch_size, sequence_length)`.
-        use_cache (:obj:`bool`, `optional`, defaults to :obj:`True`):
-            If set to :obj:`True`, :obj:`past_key_values` key value states are returned and can be used to speed up
-            decoding (see :obj:`past`). Set to :obj:`False` during training, :obj:`True` during generation
+            If `past` are used, the user can optionally input only the last `decoder_input_ids` (those that don't have
+            their past key value states given to this model) of shape `(batch_size, 1)` instead of all
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+        use_cache (`bool`, *optional*, defaults to `True`):
+            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
+            `past`). Set to `False` during training, `True` during generation
         """
         inputs = input_processing(
             func=self.call,
@@ -852,12 +854,89 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel, TFCausalLanguageModelingLoss):
     def set_output_embeddings(self, value):
         self.set_input_embeddings(value)
 
-    def prepare_inputs_for_generation(self, inputs, past, **kwargs):
+    def prepare_inputs_for_generation(self, inputs, past=None, use_cache=None, use_xla=False, **kwargs):
+        # TODO: (Joao) after the TF generator is complete, update GPT2 TF generation to match PT's. NB -- some GPT2
+        # tests will need to be fixed after the change
+
         # only last token for inputs_ids if past is defined in kwargs
         if past:
             inputs = tf.expand_dims(inputs[:, -1], -1)
 
-        return {"input_ids": inputs, "past": past, "use_cache": kwargs["use_cache"]}
+        # TODO(pvp, Joao) - this `if use_xla` statement can be removed, but is left
+        # for a future PR to not change too many things for now.
+        # All statements in this if case apply for both xla and non-xla (as they already do in PyTorch)
+        position_ids = None
+        attention_mask = None
+        if use_xla:
+            attention_mask = kwargs.get("attention_mask", None)
+            if past is not None and attention_mask is not None:
+                position_ids = tf.reduce_sum(attention_mask, axis=1, keepdims=True) - 1
+            elif attention_mask is not None:
+                position_ids = tf.math.cumsum(attention_mask, axis=1, exclusive=True)
+
+        return {
+            "input_ids": inputs,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "past_key_values": past,
+            "use_cache": use_cache,
+        }
+
+    def _update_model_kwargs_for_xla_generation(self, outputs, model_kwargs, current_pos, max_length):
+        # TODO(Pvp, Joao, Matt) - this function can be cleaned a bit and refactored
+        # quite some duplicated code patterns it seems
+        # also the `attention_mask` is currently used in a somewhat hacky to
+        # correctly influence the `past_key_values` - not sure if this is the way to go
+        # Let's keep that for a future PR.
+        past = outputs.past_key_values
+        is_past_initialized = model_kwargs.pop("past", None) is not None
+        attention_mask = model_kwargs.pop("attention_mask")
+        batch_size = attention_mask.shape[0]
+
+        if not is_past_initialized:
+            # past[0].shape[3] is seq_length of prompt
+            num_padding_values = max_length - past[0].shape[3] - 1
+
+            padding_values = np.zeros((5, 2), dtype=np.int32)
+            padding_values[3, 1] = num_padding_values
+            padding_values = tf.constant(padding_values)
+
+            new_past = list(past)
+            for i in range(len(past)):
+                new_past[i] = tf.pad(past[i], padding_values)
+
+            # Zeros for the currently-unfilled locations in the past tensor, ones for the actual input_ids
+            attention_mask = tf.concat(
+                [
+                    attention_mask,
+                    tf.zeros((batch_size, num_padding_values), dtype=attention_mask.dtype),
+                    tf.ones((batch_size, 1), dtype=attention_mask.dtype),
+                ],
+                axis=1,
+            )
+        else:
+            new_past = [None for _ in range(len(past))]
+            slice_start_base = tf.constant([0, 0, 0, 1, 0])
+            attention_mask_update_slice = tf.ones((batch_size, 1), dtype=attention_mask.dtype)
+            # correct 5 here
+            new_past_index = current_pos - 1
+
+            for i in range(len(past)):
+                update_slice = past[i][:, :, :, -1:]
+                # Write the last slice to the first open location in the padded past array
+                # and then truncate the last slice off the array
+                new_past[i] = dynamic_update_slice(
+                    past[i][:, :, :, :-1], update_slice, slice_start_base * new_past_index
+                )
+
+            update_start = tf.constant([0, 1], dtype=tf.int32) * new_past_index
+            attention_mask = dynamic_update_slice(attention_mask, attention_mask_update_slice, update_start)
+
+        # set `attention_mask` and `past`
+        model_kwargs["attention_mask"] = attention_mask
+        model_kwargs["past"] = tuple(new_past)
+
+        return model_kwargs
 
     @add_start_docstrings_to_model_forward(GPT2_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
@@ -868,45 +947,45 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel, TFCausalLanguageModelingLoss):
     )
     def call(
         self,
-        input_ids=None,
-        past=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        labels=None,
-        training=False,
+        input_ids: Optional[TFModelInputType] = None,
+        past: Optional[Tuple[Tuple[Union[np.ndarray, tf.Tensor]]]] = None,
+        attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        token_type_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        position_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        head_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        inputs_embeds: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        encoder_hidden_states: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        encoder_attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        labels: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        training: Optional[bool] = False,
         **kwargs,
-    ):
+    ) -> Union[TFCausalLMOutputWithCrossAttentions, Tuple[tf.Tensor]]:
         r"""
-        encoder_hidden_states  (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
+        encoder_hidden_states  (`tf.Tensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
             Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention if
             the model is configured as a decoder.
-        encoder_attention_mask (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
+        encoder_attention_mask (`tf.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Mask to avoid performing attention on the padding token indices of the encoder input. This mask is used in
-            the cross-attention if the model is configured as a decoder. Mask values selected in ``[0, 1]``:
+            the cross-attention if the model is configured as a decoder. Mask values selected in `[0, 1]`:
 
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
 
-        past (:obj:`Tuple[Tuple[tf.Tensor]]` of length :obj:`config.n_layers`)
+        past (`Tuple[Tuple[tf.Tensor]]` of length `config.n_layers`)
             contains precomputed key and value hidden states of the attention blocks. Can be used to speed up decoding.
-            If :obj:`past` are used, the user can optionally input only the last :obj:`decoder_input_ids` (those that
-            don't have their past key value states given to this model) of shape :obj:`(batch_size, 1)` instead of all
-            :obj:`decoder_input_ids` of shape :obj:`(batch_size, sequence_length)`.
-        use_cache (:obj:`bool`, `optional`, defaults to :obj:`True`):
-            If set to :obj:`True`, :obj:`past_key_values` key value states are returned and can be used to speed up
-            decoding (see :obj:`past`). Set to :obj:`False` during training, :obj:`True` during generation
-        labels (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Labels for computing the cross entropy classification loss. Indices should be in ``[0, ...,
-            config.vocab_size - 1]``.
+            If `past` are used, the user can optionally input only the last `decoder_input_ids` (those that don't have
+            their past key value states given to this model) of shape `(batch_size, 1)` instead of all
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+        use_cache (`bool`, *optional*, defaults to `True`):
+            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
+            `past`). Set to `False` during training, `True` during generation
+        labels (`tf.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the cross entropy classification loss. Indices should be in `[0, ...,
+            config.vocab_size - 1]`.
         """
         inputs = input_processing(
             func=self.call,
@@ -950,9 +1029,9 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel, TFCausalLanguageModelingLoss):
         loss = None
         if inputs["labels"] is not None:
             # shift labels to the left and cut last logit token
-            logits = logits[:, :-1]
+            shifted_logits = logits[:, :-1]
             labels = inputs["labels"][:, 1:]
-            loss = self.compute_loss(labels, logits)
+            loss = self.hf_compute_loss(labels, shifted_logits)
 
         if not inputs["return_dict"]:
             output = (logits,) + transformer_outputs[1:]
@@ -1006,52 +1085,54 @@ class TFGPT2DoubleHeadsModel(TFGPT2PreTrainedModel):
     @replace_return_docstrings(output_type=TFGPT2DoubleHeadsModelOutput, config_class=_CONFIG_FOR_DOC)
     def call(
         self,
-        input_ids=None,
-        past=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        mc_token_ids=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        training=False,
+        input_ids: Optional[TFModelInputType] = None,
+        past: Optional[Tuple[Tuple[Union[np.ndarray, tf.Tensor]]]] = None,
+        attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        token_type_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        position_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        head_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        inputs_embeds: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        mc_token_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        training: Optional[bool] = False,
         **kwargs,
-    ):
+    ) -> Union[TFGPT2DoubleHeadsModelOutput, Tuple[tf.Tensor]]:
         r"""
-        mc_token_ids (:obj:`tf.Tensor` or :obj:`Numpy array` of shape :obj:`(batch_size, num_choices)`, `optional`, default to index of the last token of the input):
-            Index of the classification token in each input sequence. Selected in the range ``[0, input_ids.size(-1) -
-            1[``.
+        mc_token_ids (`tf.Tensor` or `Numpy array` of shape `(batch_size, num_choices)`, *optional*, default to index of the last token of the input):
+            Index of the classification token in each input sequence. Selected in the range `[0, input_ids.size(-1) -
+            1[`.
 
         Return:
 
-        Examples::
+        Examples:
 
-            >>> import tensorflow as tf
-            >>> from transformers import GPT2Tokenizer, TFGPT2DoubleHeadsModel
+        ```python
+        >>> import tensorflow as tf
+        >>> from transformers import GPT2Tokenizer, TFGPT2DoubleHeadsModel
 
-            >>> tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-            >>> model = TFGPT2DoubleHeadsModel.from_pretrained('gpt2')
+        >>> tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        >>> model = TFGPT2DoubleHeadsModel.from_pretrained("gpt2")
 
-            >>> # Add a [CLS] to the vocabulary (we should train it also!)
-            >>> num_added_tokens = tokenizer.add_special_tokens({'cls_token': '[CLS]'})
+        >>> # Add a [CLS] to the vocabulary (we should train it also!)
+        >>> num_added_tokens = tokenizer.add_special_tokens({"cls_token": "[CLS]"})
 
-            >>> embedding_layer = model.resize_token_embeddings(len(tokenizer))  # Update the model embeddings with the new vocabulary size
+        >>> embedding_layer = model.resize_token_embeddings(
+        ...     len(tokenizer)
+        >>> )  # Update the model embeddings with the new vocabulary size
 
-            >>> choices = ["Hello, my dog is cute [CLS]", "Hello, my cat is cute [CLS]"]
-            >>> encoded_choices = [tokenizer.encode(s) for s in choices]
-            >>> cls_token_location = [tokens.index(tokenizer.cls_token_id) for tokens in encoded_choices]
+        >>> choices = ["Hello, my dog is cute [CLS]", "Hello, my cat is cute [CLS]"]
+        >>> encoded_choices = [tokenizer.encode(s) for s in choices]
+        >>> cls_token_location = [tokens.index(tokenizer.cls_token_id) for tokens in encoded_choices]
 
-            >>> input_ids = tf.constant(encoded_choices)[None, :]  # Batch size: 1, number of choices: 2
-            >>> mc_token_ids = tf.constant([cls_token_location])  # Batch size: 1
+        >>> input_ids = tf.constant(encoded_choices)[None, :]  # Batch size: 1, number of choices: 2
+        >>> mc_token_ids = tf.constant([cls_token_location])  # Batch size: 1
 
-            >>> outputs = model(input_ids, mc_token_ids=mc_token_ids)
-            >>> lm_prediction_scores, mc_prediction_scores = outputs[:2]
-
-        """
+        >>> outputs = model(input_ids, mc_token_ids=mc_token_ids)
+        >>> lm_prediction_scores, mc_prediction_scores = outputs[:2]
+        ```"""
         inputs = input_processing(
             func=self.call,
             config=self.config,
@@ -1152,14 +1233,14 @@ class TFGPT2DoubleHeadsModel(TFGPT2PreTrainedModel):
     """
     The GPT2 Model transformer with a sequence classification head on top (linear layer).
 
-    :class:`~transformers.TFGPT2ForSequenceClassification` uses the last token in order to do the classification, as
-    other causal models (e.g. GPT-1) do.
+    [`TFGPT2ForSequenceClassification`] uses the last token in order to do the classification, as other causal models
+    (e.g. GPT-1) do.
 
     Since it does classification on the last token, it requires to know the position of the last token. If a
-    :obj:`pad_token_id` is defined in the configuration, it finds the last token that is not a padding token in each
-    row. If no :obj:`pad_token_id` is defined, it simply takes the last value in each row of the batch. Since it cannot
-    guess the padding tokens when :obj:`inputs_embeds` are passed instead of :obj:`input_ids`, it does the same (take
-    the last value in each row of the batch).
+    `pad_token_id` is defined in the configuration, it finds the last token that is not a padding token in each row. If
+    no `pad_token_id` is defined, it simply takes the last value in each row of the batch. Since it cannot guess the
+    padding tokens when `inputs_embeds` are passed instead of `input_ids`, it does the same (take the last value in
+    each row of the batch).
     """,
     GPT2_START_DOCSTRING,
 )
@@ -1184,25 +1265,25 @@ class TFGPT2ForSequenceClassification(TFGPT2PreTrainedModel, TFSequenceClassific
     )
     def call(
         self,
-        input_ids=None,
-        past=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        labels=None,
-        training=False,
+        input_ids: Optional[TFModelInputType] = None,
+        past: Optional[Tuple[Tuple[Union[np.ndarray, tf.Tensor]]]] = None,
+        attention_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        token_type_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        position_ids: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        head_mask: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        inputs_embeds: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        labels: Optional[Union[np.ndarray, tf.Tensor]] = None,
+        training: Optional[bool] = False,
         **kwargs,
-    ):
+    ) -> Union[TFSequenceClassifierOutputWithPast, Tuple[tf.Tensor]]:
         r"""
-        labels (:obj:`tf.Tensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Labels for computing the cross entropy classification loss. Indices should be in ``[0, ...,
-            config.vocab_size - 1]``.
+        labels (`tf.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the cross entropy classification loss. Indices should be in `[0, ...,
+            config.vocab_size - 1]`.
         """
         inputs = input_processing(
             func=self.call,
@@ -1274,7 +1355,9 @@ class TFGPT2ForSequenceClassification(TFGPT2PreTrainedModel, TFSequenceClassific
             if not tf.is_tensor(sequence_lengths):
                 in_logits = logits[0 : logits_shape[0], sequence_lengths]
 
-            loss = self.compute_loss(tf.reshape(inputs["labels"], [-1]), tf.reshape(in_logits, [-1, self.num_labels]))
+            loss = self.hf_compute_loss(
+                tf.reshape(inputs["labels"], [-1]), tf.reshape(in_logits, [-1, self.num_labels])
+            )
         pooled_logits = in_logits if in_logits is not None else logits
 
         if not inputs["return_dict"]:

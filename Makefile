@@ -1,4 +1,4 @@
-.PHONY: deps_table_update modified_only_fixup extra_quality_checks quality style fixup fix-copies test test-examples docs
+.PHONY: deps_table_update modified_only_fixup extra_style_checks quality style fixup fix-copies test test-examples
 
 # make sure to test the local checkout in scripts and not the pre-installed one (don't use quotes!)
 export PYTHONPATH = src
@@ -90,11 +90,6 @@ test-examples:
 test-sagemaker: # install sagemaker dependencies in advance with pip install .[sagemaker]
 	TEST_SAGEMAKER=True python -m pytest -n auto  -s -v ./tests/sagemaker
 
-
-# Check that docs can build
-
-docs:
-	cd docs && make html SPHINXOPTS="-W -j 4"
 
 # Release stuff
 
